@@ -82,16 +82,24 @@ func run() error {
 		containerd.WithNewSpec(
 			oci.WithImageConfig(image),
 
-			// minimum required caps for buildkit
+			// carry over garden defaults
+			oci.WithDefaultUnixDevices,
+			oci.WithLinuxDevice("/dev/fuse", "rwm"),
+
+			// minimum required caps for running buildkit
 			oci.WithAddedCapabilities([]string{
 				"CAP_SYS_ADMIN",
 				"CAP_NET_ADMIN",
 			}),
 
+			// enable user namespace (i.e. unprivileged container)
 			oci.WithUserNamespace(0, 1000, 10000),
 
+			// ...just set a hostname
+			oci.WithHostname("concourse"),
+
+			// wire up concourse stuff
 			oci.WithMounts(mounts),
-			oci.WithHostname("container"),
 			oci.WithProcessCwd("/inputs"),
 		),
 	)
