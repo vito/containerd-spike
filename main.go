@@ -104,9 +104,10 @@ func run() error {
 			}),
 
 			// enable user namespaces
-			// XXX: there's no way to specifically use maxGid here :/
-			oci.WithUserNamespace(0, maxUid, 1),
-			oci.WithUserNamespace(1, 1, maxUid-1),
+			oci.WithLinuxNamespace(specs.LinuxNamespace{
+				Type: specs.UserNamespace,
+			}),
+			withRemappedRoot(maxUid, maxGid),
 
 			// ...just set a hostname
 			oci.WithHostname("concourse"),
@@ -209,6 +210,37 @@ func run() error {
 	return nil
 }
 
+func withRemappedRoot(maxUid, maxGid uint32) oci.SpecOpts {
+	return func(_ context.Context, _ oci.Client, _ *containers.Container, s *oci.Spec) error {
+		s.Linux.UIDMappings = []specs.LinuxIDMapping{
+			{
+				ContainerID: 0,
+				HostID:      maxUid,
+				Size:        1,
+			},
+			{
+				ContainerID: 1,
+				HostID:      1,
+				Size:        maxUid - 1,
+			},
+		}
+
+		s.Linux.GIDMappings = []specs.LinuxIDMapping{
+			{
+				ContainerID: 0,
+				HostID:      maxGid,
+				Size:        1,
+			},
+			{
+				ContainerID: 1,
+				HostID:      1,
+				Size:        maxGid - 1,
+			},
+		}
+
+		return nil
+	}
+}
 func withRemappedSnapshotBase(id string, i containerd.Image, uid, gid uint32, readonly bool) containerd.NewContainerOpts {
 	return func(ctx context.Context, client *containerd.Client, c *containers.Container) error {
 		diffIDs, err := i.RootFS(ctx)
