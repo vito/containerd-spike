@@ -87,15 +87,14 @@ func run() error {
 			oci.WithDefaultUnixDevices,
 			oci.WithLinuxDevice("/dev/fuse", "rwm"),
 
-			// minimum privileges needed for rootless buildkit without --oci-worker-no-process-sandbox
-			// ...but let's try just assuming that flag will be used, since the build
-			// is already running in a container
-			// oci.WithMaskedPaths(nil),   // buildkit
-			// oci.WithReadonlyPaths(nil), // buildkit
+			// this should probably be what 'privileged' means
+			//
+			// enabled so that rootless buildkit's newuidmap works (it's suid)
+			oci.WithNewPrivileges,
 
-			// Docker doesn't set these up, and they break rootlesskit
-			oci.WithNewPrivileges, // rootlesskit newuidmap/newgidmap (suid)
-			WithoutRunMount,       // moby/buildkit:rootless sets up /run/user/1000; don't clobber it
+			// Docker doesn't set up /run, and moby/buildkit:rootless sets up
+			// /run/user/1000; don't clobber it
+			WithoutRunMount,
 
 			// ...just set a hostname
 			oci.WithHostname("concourse"),
