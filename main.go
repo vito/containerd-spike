@@ -10,10 +10,9 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cio"
+	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
-	"github.com/containerd/containerd/runtime/linux/runctypes"
-	"github.com/containerd/containerd/runtime/v2/runc/options"
 	"github.com/containerd/go-cni"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
@@ -37,7 +36,9 @@ func run() error {
 	ctx := namespaces.WithNamespace(context.Background(), "concourse")
 
 	// image, err := importImage(ctx, client, "oci-build-task.tar")
-	image, err := client.Pull(ctx, "docker.io/vito/oci-build-task:latest", containerd.WithPullUnpack)
+	// image, err := client.Pull(ctx, "docker.io/vito/oci-build-task:latest", containerd.WithPullUnpack)
+	image, err := client.Pull(ctx, "docker.io/vito/containerd-test:latest", containerd.WithPullUnpack)
+	// image, err := client.Pull(ctx, "docker.io/sjourdan/strace:latest", containerd.WithPullUnpack)
 	if err != nil {
 		return err
 	}
@@ -77,8 +78,8 @@ func run() error {
 	container, err := client.NewContainer(
 		ctx,
 		"some-container",
-		containerd.WithRemappedSnapshot("some-container-snapshot", image, 1000, 1000),
-		// containerd.WithNewSnapshot("some-container-snapshot", image),
+		// containerd.WithRemappedSnapshot("some-container-snapshot", image, 100000, 100000),
+		containerd.WithNewSnapshot("some-container-snapshot", image),
 		containerd.WithNewSpec(
 			oci.WithImageConfig(image),
 
@@ -86,14 +87,15 @@ func run() error {
 			oci.WithDefaultUnixDevices,
 			oci.WithLinuxDevice("/dev/fuse", "rwm"),
 
-			// minimum required caps for running buildkit
-			oci.WithAddedCapabilities([]string{
-				"CAP_SYS_ADMIN",
-				"CAP_NET_ADMIN",
-			}),
+			// minimum privileges needed for rootless buildkit without --oci-worker-no-process-sandbox
+			// ...but let's try just assuming that flag will be used, since the build
+			// is already running in a container
+			// oci.WithMaskedPaths(nil),   // buildkit
+			// oci.WithReadonlyPaths(nil), // buildkit
 
-			// enable user namespace (i.e. unprivileged container)
-			oci.WithUserNamespace(0, 1000, 10000),
+			// Docker doesn't set these up, and they break rootlesskit
+			oci.WithNewPrivileges, // rootlesskit newuidmap/newgidmap (suid)
+			WithoutRunMount,       // moby/buildkit:rootless sets up /run/user/1000; don't clobber it
 
 			// ...just set a hostname
 			oci.WithHostname("concourse"),
@@ -101,6 +103,7 @@ func run() error {
 			// wire up concourse stuff
 			oci.WithMounts(mounts),
 			oci.WithProcessCwd("/inputs"),
+			oci.WithProcessArgs("task"),
 		),
 	)
 	if err != nil {
@@ -117,27 +120,26 @@ func run() error {
 
 	logrus.Info("running task")
 
-	info, err := container.Info(ctx)
-	if err != nil {
-		return err
-	}
+	// info, err := container.Info(ctx)
+	// if err != nil {
+	// 	return err
+	// }
 
 	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(bytes.NewBuffer(reqBuf), os.Stdout, os.Stderr)), func(_ context.Context, client *containerd.Client, r *containerd.TaskInfo) error {
-		var copts interface{}
-		container.Info(ctx)
-		if containerd.CheckRuntime(info.Runtime.Name, "io.containerd.runc") {
-			copts = &options.Options{
-				IoUid: 1000,
-				IoGid: 1000,
-			}
-		} else {
-			copts = &runctypes.CreateOptions{
-				IoUid: 1000,
-				IoGid: 1000,
-			}
-		}
+		// var copts interface{}
+		// if containerd.CheckRuntime(info.Runtime.Name, "io.containerd.runc") {
+		// 	copts = &options.Options{
+		// 		IoUid: 1000,
+		// 		IoGid: 1000,
+		// 	}
+		// } else {
+		// 	copts = &runctypes.CreateOptions{
+		// 		IoUid: 1000,
+		// 		IoGid: 1000,
+		// 	}
+		// }
 
-		r.Options = copts
+		// r.Options = copts
 		return nil
 	})
 	if err != nil {
@@ -154,6 +156,9 @@ func run() error {
 	}
 
 	netns := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+
+	// XXX: just to handle breakage
+	network.Remove(ctx, "some-network", "")
 
 	_, err = network.Setup(ctx, "some-network", netns)
 	if err != nil {
@@ -188,6 +193,16 @@ func run() error {
 
 	logrus.Infof("exited %d at %s", code, exitedAt)
 
+	return nil
+}
+
+// WithWriteableCgroupfs makes any cgroup mounts writeable
+func WithoutRunMount(_ context.Context, _ oci.Client, _ *containers.Container, s *oci.Spec) error {
+	for i, m := range s.Mounts {
+		if m.Destination == "/run" {
+			s.Mounts = append(s.Mounts[:i], s.Mounts[i+1:]...)
+		}
+	}
 	return nil
 }
 
